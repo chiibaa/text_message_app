@@ -1,0 +1,186 @@
+# =============================================================================
+# CI Workflow - Test, Build, Lint
+# =============================================================================
+#
+# 学習ポイント:
+# 1. CI (Continuous Integration) の目的
+#    - コード変更のたびに自動テスト
+#    - 品質を継続的に維持
+#    - PRでの問題を早期発見
+#
+# 2. ワークフロートリガー
+#    - pull_request: PRに対して実行
+#    - push (main): メインブランチへのプッシュ時
+#
+# 3. ジョブ構成
+#    - test: ユニットテスト実行
+#    - build: ビルド確認（コンパイルエラー検出）
+#    - lint: コードスタイルチェック
+# =============================================================================
+
+name: CI
+
+# =============================================================================
+# Triggers - ワークフロー実行トリガー
+# =============================================================================
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ci.yml'
+
+  push:
+    branches:
+      - main
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ci.yml'
+
+# =============================================================================
+# Permissions - 最小権限の原則
+# =============================================================================
+permissions:
+  contents: read
+  pull-requests: read
+
+# =============================================================================
+# Jobs
+# =============================================================================
+jobs:
+  # ---------------------------------------------------------------------------
+  # Test Job - ユニットテスト
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # リポジトリのチェックアウト
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Go のセットアップ
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true  # go.sum ベースのキャッシュ
+
+      # 依存関係のダウンロード
+      - name: Download dependencies
+        run: go mod download
+
+      # テスト実行
+      # 学習ポイント:
+      # - -v: 詳細出力
+      # - -race: 競合状態の検出
+      # - -coverprofile: カバレッジレポート生成
+      - name: Run tests
+        run: |
+          go test -v -race -coverprofile=coverage.out ./...
+
+      # カバレッジレポートをアーティファクトとして保存
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Build Job - ビルド確認
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # ビルド実行
+      # 学習ポイント:
+      # - CGO_ENABLED=0: 静的リンク（コンテナ用）
+      # - -ldflags: バイナリの最適化
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-w -s" \
+            -o server \
+            ./cmd/server
+
+      # ビルド成果物の確認
+      - name: Verify build output
+        run: |
+          ls -la server
+          file server
+
+  # ---------------------------------------------------------------------------
+  # Lint Job - コードスタイルチェック
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      # golangci-lint の実行
+      # 学習ポイント:
+      # - golangci-lint: 複数のリンターを統合
+      # - --timeout: 大規模プロジェクト用にタイムアウト延長
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # ---------------------------------------------------------------------------
+  # Docker Build Job - Dockerイメージのビルド確認
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Docker Buildx のセットアップ（高速ビルド用）
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Dockerイメージのビルド（プッシュなし）
+      # 学習ポイント:
+      # - push: false でビルドのみ確認
+      # - cache-from/to: ビルドキャッシュでCI高速化
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: text-messaging-app:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

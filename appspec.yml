@@ -1,0 +1,55 @@
+# =============================================================================
+# AppSpec File - CodeDeploy Blue/Green Deployment
+# =============================================================================
+#
+# 学習ポイント:
+# 1. AppSpec ファイルの役割
+#    - CodeDeploy にデプロイ方法を指示
+#    - ECS Blue/Green デプロイで使用
+#
+# 2. 構成要素
+#    - version: AppSpec バージョン（常に 0.0）
+#    - Resources: デプロイ対象のリソース定義
+#    - Hooks: デプロイライフサイクルフック（オプション）
+#
+# 3. プレースホルダー
+#    - <TASK_DEFINITION>: CI/CDで動的に置換
+#    - GitHub Actions で新しいタスク定義ARNに置き換え
+# =============================================================================
+
+version: 0.0
+
+# =============================================================================
+# Resources - デプロイ対象のECSリソース
+# =============================================================================
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        # タスク定義（CI/CDで動的に置換される）
+        # 形式: arn:aws:ecs:region:account:task-definition/family:revision
+        TaskDefinition: <TASK_DEFINITION>
+
+        # ロードバランサー設定
+        LoadBalancerInfo:
+          ContainerName: "text-messaging-app"
+          ContainerPort: 8080
+
+        # プラットフォームバージョン（Fargateの場合）
+        # LATEST: 最新の安定バージョンを使用
+        PlatformVersion: "LATEST"
+
+# =============================================================================
+# Hooks - デプロイライフサイクルフック（オプション）
+# =============================================================================
+# 学習ポイント:
+# - AfterAllowTestTraffic: テストトラフィック許可後に実行
+# - BeforeAllowTraffic: 本番トラフィック切り替え前に実行
+# - AfterAllowTraffic: 本番トラフィック切り替え後に実行
+#
+# Lambda関数を呼び出して、自動テストやヘルスチェックを実行可能
+# 今回は基本構成のため省略
+# =============================================================================
+# Hooks:
+#   - AfterAllowTestTraffic: "arn:aws:lambda:region:account:function:test-function"
+#   - BeforeAllowTraffic: "arn:aws:lambda:region:account:function:validation-function"

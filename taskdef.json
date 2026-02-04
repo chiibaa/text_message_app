@@ -1,0 +1,89 @@
+{
+  "_comment": [
+    "=============================================================================",
+    "ECS Task Definition Template",
+    "=============================================================================",
+    "",
+    "学習ポイント:",
+    "1. タスク定義の役割",
+    "   - コンテナの実行方法を定義",
+    "   - CPU/メモリ、環境変数、ログ設定など",
+    "",
+    "2. プレースホルダー（CI/CDで動的置換）",
+    "   - <IMAGE>: ECRイメージURI",
+    "   - <EXECUTION_ROLE_ARN>: タスク実行ロール",
+    "   - <TASK_ROLE_ARN>: タスクロール",
+    "   - <LOG_GROUP>: CloudWatch Logs グループ名",
+    "   - <REGION>: AWSリージョン",
+    "   - <DATABASE_SECRET_ARN>: DBシークレットARN",
+    "",
+    "3. Fargate要件",
+    "   - networkMode: awsvpc（必須）",
+    "   - requiresCompatibilities: FARGATE",
+    "============================================================================="
+  ],
+
+  "family": "text-messaging-dev",
+
+  "executionRoleArn": "<EXECUTION_ROLE_ARN>",
+  "taskRoleArn": "<TASK_ROLE_ARN>",
+
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+
+  "cpu": "256",
+  "memory": "512",
+
+  "containerDefinitions": [
+    {
+      "name": "text-messaging-app",
+      "image": "<IMAGE>",
+      "essential": true,
+
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+
+      "environment": [
+        {
+          "name": "PORT",
+          "value": "8080"
+        },
+        {
+          "name": "STORAGE_TYPE",
+          "value": "postgres"
+        }
+      ],
+
+      "secrets": [
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "<DATABASE_SECRET_ARN>:DATABASE_URL::"
+        }
+      ],
+
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "<LOG_GROUP>",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "app"
+        }
+      },
+
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

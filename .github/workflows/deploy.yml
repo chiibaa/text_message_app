@@ -1,0 +1,275 @@
+# =============================================================================
+# CD Workflow - Deploy to AWS ECS
+# =============================================================================
+#
+# 学習ポイント:
+# 1. CD (Continuous Deployment) の目的
+#    - mainブランチへのマージで自動デプロイ
+#    - 人的エラーの削減
+#    - リリースサイクルの高速化
+#
+# 2. OIDC認証
+#    - AWS IAMロールをGitHub Actionsから直接引き受け
+#    - シークレットキーの管理不要（セキュア）
+#
+# 3. Blue/Green デプロイ
+#    - ECRにイメージをプッシュ
+#    - タスク定義を更新
+#    - CodeDeployでBlue/Green切り替え
+# =============================================================================
+
+name: Deploy
+
+# =============================================================================
+# Triggers
+# =============================================================================
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'appspec.yml'
+      - 'taskdef.json'
+      - '.github/workflows/deploy.yml'
+
+  # 手動トリガー（テスト用）
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+# =============================================================================
+# Environment Variables
+# =============================================================================
+env:
+  AWS_REGION: ap-northeast-1
+  ENVIRONMENT: dev
+  ECR_REPOSITORY: text-messaging-app-dev
+  ECS_CLUSTER: text-messaging-dev
+  ECS_SERVICE: text-messaging-dev
+  CODEDEPLOY_APPLICATION: text-messaging-dev
+  CODEDEPLOY_DEPLOYMENT_GROUP: text-messaging-dev-dg
+  TASK_DEFINITION_FAMILY: text-messaging-dev
+
+# =============================================================================
+# Permissions - OIDC用
+# =============================================================================
+# 学習ポイント:
+# - id-token: write: OIDCトークンの発行に必要
+# - contents: read: リポジトリの読み取り
+permissions:
+  id-token: write
+  contents: read
+
+# =============================================================================
+# Jobs
+# =============================================================================
+jobs:
+  # ---------------------------------------------------------------------------
+  # Deploy Job
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+
+    # 本番環境の場合は承認を要求（オプション）
+    # environment:
+    #   name: production
+    #   url: http://${{ steps.get-alb-dns.outputs.alb_dns }}
+
+    steps:
+      # -------------------------------------------------------------------------
+      # 1. チェックアウト
+      # -------------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------------
+      # 2. AWS認証 (OIDC)
+      # -------------------------------------------------------------------------
+      # 学習ポイント:
+      # - OIDC: OpenID Connect による認証
+      # - AWS_ROLE_ARN: 事前に作成したIAMロールのARN
+      # - シークレットキー不要でセキュア
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      # -------------------------------------------------------------------------
+      # 3. ECRログイン
+      # -------------------------------------------------------------------------
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # -------------------------------------------------------------------------
+      # 4. Docker Buildx セットアップ
+      # -------------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # -------------------------------------------------------------------------
+      # 5. Dockerイメージのビルド & プッシュ
+      # -------------------------------------------------------------------------
+      # 学習ポイント:
+      # - イメージタグ: コミットSHA（イミュータブル）+ latest
+      # - キャッシュ: GitHub Actions キャッシュで高速化
+      - name: Build and push Docker image
+        id: build-image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # -------------------------------------------------------------------------
+      # 6. タスク定義の取得と更新
+      # -------------------------------------------------------------------------
+      # 学習ポイント:
+      # - 現在のタスク定義をベースに新しいイメージURIを設定
+      # - fill-in-task-definition: プレースホルダーを実際の値に置換
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.TASK_DEFINITION_FAMILY }} \
+            --query taskDefinition \
+            > current-task-def.json
+
+      - name: Update task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: current-task-def.json
+          container-name: text-messaging-app
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+      # -------------------------------------------------------------------------
+      # 7. タスク定義の登録
+      # -------------------------------------------------------------------------
+      - name: Register new task definition
+        id: register-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_definition_arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+          echo "Registered task definition: $TASK_DEF_ARN"
+
+      # -------------------------------------------------------------------------
+      # 8. AppSpec ファイルの更新
+      # -------------------------------------------------------------------------
+      - name: Prepare AppSpec file
+        run: |
+          sed -i "s|<TASK_DEFINITION>|${{ steps.register-task-def.outputs.task_definition_arn }}|g" appspec.yml
+          cat appspec.yml
+
+      # -------------------------------------------------------------------------
+      # 9. CodeDeploy Blue/Green デプロイ
+      # -------------------------------------------------------------------------
+      # 学習ポイント:
+      # - create-deployment: 新しいデプロイを作成
+      # - appspec: デプロイ設定（JSON形式で埋め込み）
+      # - wait: デプロイ完了まで待機
+      - name: Create CodeDeploy deployment
+        id: deploy
+        run: |
+          # AppSpecの内容をBase64エンコード
+          APPSPEC_CONTENT=$(cat appspec.yml | base64 -w 0)
+
+          # デプロイ作成
+          DEPLOYMENT_ID=$(aws deploy create-deployment \
+            --application-name ${{ env.CODEDEPLOY_APPLICATION }} \
+            --deployment-group-name ${{ env.CODEDEPLOY_DEPLOYMENT_GROUP }} \
+            --revision '{"revisionType": "AppSpecContent", "appSpecContent": {"content": "'"$(cat appspec.yml)"'"}}' \
+            --description "GitHub Actions deployment: ${{ github.sha }}" \
+            --query 'deploymentId' \
+            --output text)
+
+          echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+          echo "Deployment started: $DEPLOYMENT_ID"
+
+      # -------------------------------------------------------------------------
+      # 10. デプロイ完了待機
+      # -------------------------------------------------------------------------
+      - name: Wait for deployment to complete
+        run: |
+          echo "Waiting for deployment ${{ steps.deploy.outputs.deployment_id }}..."
+          aws deploy wait deployment-successful \
+            --deployment-id ${{ steps.deploy.outputs.deployment_id }}
+          echo "Deployment completed successfully!"
+
+      # -------------------------------------------------------------------------
+      # 11. デプロイ結果の出力
+      # -------------------------------------------------------------------------
+      - name: Get deployment info
+        if: always()
+        run: |
+          aws deploy get-deployment \
+            --deployment-id ${{ steps.deploy.outputs.deployment_id }} \
+            --query 'deploymentInfo.{Status:status,ErrorInfo:errorInformation}' \
+            --output table
+
+      # -------------------------------------------------------------------------
+      # 12. ALB DNS名の取得（確認用）
+      # -------------------------------------------------------------------------
+      - name: Get ALB DNS name
+        id: get-alb-dns
+        run: |
+          ALB_DNS=$(aws cloudformation describe-stacks \
+            --stack-name TextMessaging-${{ env.ENVIRONMENT }}-ECS \
+            --query "Stacks[0].Outputs[?OutputKey=='AlbDnsName'].OutputValue" \
+            --output text)
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+          echo "Application URL: http://$ALB_DNS"
+
+      # -------------------------------------------------------------------------
+      # 13. ヘルスチェック
+      # -------------------------------------------------------------------------
+      - name: Health check
+        run: |
+          echo "Performing health check..."
+          for i in {1..5}; do
+            if curl -sf "http://${{ steps.get-alb-dns.outputs.alb_dns }}/health"; then
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "Health check failed after 5 attempts"
+          exit 1
+
+      # -------------------------------------------------------------------------
+      # 14. デプロイサマリー
+      # -------------------------------------------------------------------------
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ env.ENVIRONMENT }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Task Definition | ${{ steps.register-task-def.outputs.task_definition_arn }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployment ID | ${{ steps.deploy.outputs.deployment_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Application URL | http://${{ steps.get-alb-dns.outputs.alb_dns }} |" >> $GITHUB_STEP_SUMMARY
