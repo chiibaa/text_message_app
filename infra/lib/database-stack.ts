@@ -105,7 +105,7 @@ export class DatabaseStack extends cdk.Stack {
 
       // エンジン設定
       engine: rds.DatabaseInstanceEngine.postgres({
-        version: rds.PostgresEngineVersion.VER_16_4,
+        version: rds.PostgresEngineVersion.VER_16_6,
       }),
 
       // インスタンス設定（dev環境向け）
@@ -146,7 +146,7 @@ export class DatabaseStack extends cdk.Stack {
       // パラメータグループ（デフォルト設定を使用）
       parameterGroup: new rds.ParameterGroup(this, 'ParameterGroup', {
         engine: rds.DatabaseInstanceEngine.postgres({
-          version: rds.PostgresEngineVersion.VER_16_4,
+          version: rds.PostgresEngineVersion.VER_16_6,
         }),
         description: `Parameter group for text-messaging-${environment}`,
         parameters: {

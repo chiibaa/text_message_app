@@ -128,7 +128,7 @@ export class EcsStack extends cdk.Stack {
     this.cluster = new ecs.Cluster(this, 'Cluster', {
       clusterName: `text-messaging-${environment}`,
       vpc,
-      containerInsights: true, // CloudWatch Container Insightsを有効化
+      containerInsightsV2: ecs.ContainerInsights.ENABLED, // CloudWatch Container Insightsを有効化
     });
 
     // =========================================================================
@@ -187,8 +187,8 @@ export class EcsStack extends cdk.Stack {
     // アプリケーションコンテナを追加
     const container = taskDefinition.addContainer('app', {
       containerName: 'text-messaging-app',
-      // 初期イメージ（初回デプロイ後はCI/CDでECRイメージに差し替え）
-      image: ecs.ContainerImage.fromRegistry('amazon/amazon-ecs-sample'),
+      // ECRリポジトリのイメージを使用
+      image: ecs.ContainerImage.fromEcrRepository(ecrRepository, 'latest'),
 
       // 環境変数
       environment: {
@@ -209,7 +209,7 @@ export class EcsStack extends cdk.Stack {
 
       // ヘルスチェック
       healthCheck: {
-        command: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1'],
+        command: ['CMD-SHELL', 'curl -f http://localhost:8080/health || exit 1'],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         retries: 3,
@@ -341,13 +341,9 @@ export class EcsStack extends cdk.Stack {
       // ヘルスチェック猶予期間
       healthCheckGracePeriod: cdk.Duration.seconds(60),
 
-      // サーキットブレーカー（デプロイ失敗時の自動ロールバック）
-      circuitBreaker: {
-        enable: true,
-        rollback: true,
-      },
+      // 注: circuitBreaker は CODE_DEPLOY デプロイコントローラーと併用不可
+      // Blue/Green デプロイでは CodeDeploy 側の autoRollback が同等の役割を担う
 
-      // ログ用のタグを追加
       enableExecuteCommand: true, // ECS Exec を有効化（デバッグ用）
     });
 
