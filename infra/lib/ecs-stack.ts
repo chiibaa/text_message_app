@@ -197,8 +197,13 @@ export class EcsStack extends cdk.Stack {
       },
 
       // シークレット（Secrets Managerから取得）
+      // RDS自動生成シークレットのキー: host, port, username, password, dbname, engine
       secrets: {
-        DATABASE_URL: ecs.Secret.fromSecretsManager(databaseSecret, 'DATABASE_URL'),
+        DB_HOST: ecs.Secret.fromSecretsManager(databaseSecret, 'host'),
+        DB_PORT: ecs.Secret.fromSecretsManager(databaseSecret, 'port'),
+        DB_USERNAME: ecs.Secret.fromSecretsManager(databaseSecret, 'username'),
+        DB_PASSWORD: ecs.Secret.fromSecretsManager(databaseSecret, 'password'),
+        DB_NAME: ecs.Secret.fromSecretsManager(databaseSecret, 'dbname'),
       },
 
       // ログ設定

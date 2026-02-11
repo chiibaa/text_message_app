@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -59,7 +60,21 @@ func initStorage() (storage.Storage, func()) {
 	case "postgres":
 		databaseURL := os.Getenv("DATABASE_URL")
 		if databaseURL == "" {
-			log.Fatal("DATABASE_URL is required when STORAGE_TYPE=postgres")
+			// 個別の環境変数からDATABASE_URLを組み立てる（ECS + Secrets Manager対応）
+			dbHost := os.Getenv("DB_HOST")
+			dbPort := os.Getenv("DB_PORT")
+			dbUser := os.Getenv("DB_USERNAME")
+			dbPass := os.Getenv("DB_PASSWORD")
+			dbName := os.Getenv("DB_NAME")
+			if dbHost != "" && dbUser != "" && dbPass != "" && dbName != "" {
+				if dbPort == "" {
+					dbPort = "5432"
+				}
+				databaseURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=require",
+					dbUser, dbPass, dbHost, dbPort, dbName)
+			} else {
+				log.Fatal("DATABASE_URL or DB_HOST/DB_USERNAME/DB_PASSWORD/DB_NAME is required when STORAGE_TYPE=postgres")
+			}
 		}
 
 		store, err := storage.NewPostgresStorage(databaseURL)
